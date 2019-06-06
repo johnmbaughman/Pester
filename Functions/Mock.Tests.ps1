@@ -2103,7 +2103,15 @@ if ($PSVersionTable.PSVersion.Major -ge 3) {
                 It 'returns default mock' {
                     Get-Content -Path "c:\temp.txt" | Should -Be "default-get-content"
                 }
+            }
 
+            Context "Alias rewriting works when alias and parameter name differ in length" {
+
+                Mock New-Item { return "nic" } -ParameterFilter { $Type -ne $null -and $Type.StartsWith("nic") }
+
+                It 'calls the mock' {
+                    New-Item -Path 'Hello' -Type "nic" | Should -Be "nic"
+                }
             }
 
             if ($PSVersionTable.PSVersion -ge 5.1) {
@@ -2121,7 +2129,7 @@ if ($PSVersionTable.PSVersion.Major -ge 3) {
         }
 
         Context 'Assert-MockCalled' {
-            It "Uses parameter aliases in Parameter-Filter" {
+            It "Uses parameter aliases in ParameterFilter" {
                 function f { Get-Content -Path 'temp.txt' -Tail 10 }
                 Mock Get-Content { }
 
@@ -2205,5 +2213,157 @@ Describe "Mock definition output" {
         function a () {}
         $output = Mock a { }
         $output | Should -Be $null
+    }
+}
+
+Describe 'Mocking using ParameterFilter' {
+
+    Context 'Scriptblock [Scriptblock]::Create() passed to ParameterFilter as var' {
+        BeforeAll{
+            $filter = [scriptblock]::Create( ('$Path -eq ''C:\Windows''') )
+            Mock Test-Path { $True }
+            Mock Test-Path -ParameterFilter $filter -MockWith { $False }
+        }
+
+        It "Returns default mock" {
+            Test-Path -Path C:\AwesomePath | Should -Be $True
+        }
+
+        It "returns mock that matches parameter filter block" {
+            Test-Path -Path C:\Windows | Should -Be $false
+        }
+    }
+
+    Context 'Scriptblock expression $( [Scriptblock]::Create() ) passed to ParameterFilter' {
+        BeforeAll{
+            $filter = [scriptblock]::Create( ('$Path -eq ''C:\Windows''') )
+            Mock Test-Path { $True }
+            Mock Test-Path -ParameterFilter $( [scriptblock]::Create(('$Path -eq ''C:\Windows''')) ) -MockWith { $False }
+        }
+
+        It "Returns default mock" {
+            Test-Path -Path C:\AwesomePath | Should -Be $True
+        }
+
+        It "returns mock that matches parameter filter block" {
+            Test-Path -Path C:\Windows | Should -Be $false
+        }
+    }
+
+    Context 'Scriptblock {} passed to ParameterFilter' {
+        BeforeAll{
+            Mock Test-Path { $True }
+            Mock Test-Path -ParameterFilter { $Path -eq "C:\Windows" } -MockWith { $False }
+        }
+
+        It "Returns default mock" {
+            Test-Path -Path C:\AwesomePath | Should -Be $True
+        }
+
+        It "returns mock that matches parameter filter block" {
+            Test-Path -Path C:\Windows | Should -Be $false
+        }
+    }
+    Context 'Scriptblock {} passed to ParameterFilter as var' {
+        BeforeAll{
+            $filter = {
+                $Path -eq "C:\Windows"
+            }
+            Mock Test-Path { $True }
+            Mock Test-Path -ParameterFilter $filter -MockWith { $False }
+        }
+
+        It "Returns default mock" {
+            Test-Path -Path C:\AwesomePath | Should -Be $True
+        }
+
+        It "returns mock that matches parameter filter block" {
+            Test-Path -Path C:\Windows | Should -Be $false
+        }
+    }
+
+    Context 'Function Definition ${} passed to ParameterFilter' {
+        BeforeAll {
+            Function ParamFilter {
+                $Path -eq "C:\Windows"
+            }
+            Mock Test-Path { $True }
+            Mock Test-Path -ParameterFilter ${function:ParamFilter} -MockWith { $False }
+        }
+
+        It "Returns default mock" {
+            Test-Path -Path C:\AwesomePath | Should -Be $True
+        }
+
+        It "returns mock that matches parameter filter block" {
+            Test-Path -Path C:\Windows | Should -Be $false
+        }
+    }
+}
+
+
+if ($PSVersionTable.PSVersion.Major -ge 3) {
+    Describe "-RemoveParameterType" {
+        BeforeAll {
+
+        }
+
+        It 'removes parameter type for simple function' {
+            function f ([int]$Count, [string]$Name) {
+                $Count + 1
+            }
+
+            Mock f { "result" } -RemoveParameterType 'Count'
+            [Diagnostics.Process] $currentProcess = Get-Process -id $pid
+
+            $currentProcess -as [int] -eq $null | Should -BeTrue -Because "Process is not convertible to int"
+            f -Name 'Hello' -Count $currentProcess | Should -Be "result" -Because "we successfuly provided a process to parameter defined as int"
+        }
+
+        if ($PSVersionTable.PSVersion.Major -eq 5) {
+            Context 'NetAdapter example' {
+                It 'passes pscustomobject to a parameter defined as CimSession[]' {
+                    Mock Get-NetAdapter { [pscustomobject]@{ Name = 'Mocked' } }
+                    Mock Set-NetAdapter -RemoveParameterType 'InputObject'
+
+                    $adapter = Get-NetAdapter
+                    $adapter | Set-NetAdapter
+
+                    Assert-MockCalled Set-NetAdapter -ParameterFilter { $InputObject.Name -eq 'Mocked' }
+                }
+            }
+
+            Context "Get-PhysicalDisk example" {
+                Mock Get-PhysicalDisk -RemoveParameterType Usage, HealthStatus { return "hello" }
+
+                It "should return 'hello'" {
+                    Get-PhysicalDisk | Should Be "hello"
+                }
+            }
+        }
+    }
+}
+
+Describe 'RemoveParameterValidation' {
+    BeforeAll {
+        function Test-Validation {
+            param(
+                [Parameter()]
+                [ValidateRange(1, 10)]
+                [int]
+                $Count
+            )
+            $Count
+        }
+    }
+
+    It 'throws when number is not in the valid range' {
+        { Test-Validation -Count -1 } | Should -Throw -ErrorId 'ParameterArgumentValidationError'
+    }
+
+    It 'passes when mock removes the validation' {
+        Mock Test-Validation -RemoveParameterValidation Count { "mock" }
+
+        Test-Validation -Count -1 | Should -Be "mock"
     }
 }
